@@ -1,4 +1,11 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { ProductDiscoveryView } from "./components/ProductDiscoveryView";
+import { PlanningView } from "./components/PlanningView";
+import { ArchitectureView } from "./components/ArchitectureView";
+import { DevelopmentView } from "./components/DevelopmentView";
+import { QAView } from "./components/QAView";
+import { DeploymentView } from "./components/DeploymentView";
+import { ObservabilityView } from "./components/ObservabilityView";
 import {
   LayoutDashboard, Lightbulb, BookOpen, GitBranch, Code2, FlaskConical,
   Rocket, Activity, Bot, CheckSquare, Network, Github, FolderGit2,
@@ -9,12 +16,14 @@ import {
   ExternalLink, Cpu, AlertCircle, Circle, Terminal, Layers, GitMerge,
   MonitorDot, Gauge, ListChecks, GitCommit, ArrowRight, Workflow,
   SlidersHorizontal, ChevronUp, Minus, TriangleAlert, Info, Braces,
-  PackageCheck, Server, TrendingDown, Radio, Database, MapPin
+  PackageCheck, Server, TrendingDown, Radio, Database, MapPin, Trash2
 } from "lucide-react";
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, BarChart, Bar, PieChart, Pie, Cell
 } from "recharts";
+import * as workflowService from "../services/workflow.service";
+import * as githubService from "../services/github.service";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -400,8 +409,14 @@ interface DesignerEdge {
   id: string; fromId: string; toId: string; relationship: string;
 }
 interface SavedWorkflow {
-  id: string; name: string; nodes: DesignerNode[]; edges: DesignerEdge[];
-  createdAt: string; status: "draft" | "active" | "paused";
+  id: string;
+  name: string;
+  nodes: DesignerNode[];
+  edges: DesignerEdge[];
+  nodeCount?: number;  // For summary view
+  edgeCount?: number;  // For summary view
+  createdAt: string;
+  status: "draft" | "active" | "paused";
 }
 
 // ── Palette data ──
@@ -505,23 +520,57 @@ const defaultSavedWorkflows: SavedWorkflow[] = [
   },
 ];
 
-// ── Sprint live-run canvas (original) ──
-function SprintCanvas() {
+// ── Sprint live-run canvas (with dynamic workflows) ──
+function SprintCanvas({
+  liveRuns,
+  onRefreshStatus
+}: {
+  liveRuns: Array<{ id: string; name: string; nodes: any[]; edges: any[]; status: string; startedAt: string; githubRunId?: number }>;
+  onRefreshStatus?: (runId: string, githubRunId: number) => void;
+}) {
   const [selected, setSelected] = useState<string | null>(null);
   const [runState, setRunState] = useState<"running" | "paused">("running");
-  const selectedNode = workflowNodes.find(n => n.id === selected);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Use live runs if available, otherwise show example
+  const activeRun = liveRuns.length > 0 ? liveRuns[0] : null;
+  const displayNodes = activeRun ? activeRun.nodes : workflowNodes;
+  const displayEdges = activeRun ? activeRun.edges : workflowEdges;
+  const workflowName = activeRun ? activeRun.name : "User Auth Module v2.4.1 — Sprint 14";
+
+  // Manual refresh GitHub status
+  const handleRefresh = async () => {
+    if (!activeRun || !activeRun.githubRunId || !onRefreshStatus) return;
+
+    setRefreshing(true);
+    try {
+      await onRefreshStatus(activeRun.id, activeRun.githubRunId);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const selectedNode = displayNodes.find((n: any) => n.id === selected);
   const nodeColor: Record<string, string> = { strategic: "#3b82f6", engineering: "#22c55e", governance: "#f59e0b", operational: "#a855f7" };
   const statusFill: Record<Status, string> = { completed: "#22c55e", running: "#3b82f6", waiting: "#374151", failed: "#ef4444", blocked: "#f59e0b", retrying: "#a855f7", pending: "#6b7598" };
-  function nodeCenter(id: string) { const n = workflowNodes.find(n => n.id === id); return n ? { x: n.x + 64, y: n.y + 28 } : { x: 0, y: 0 }; }
+  function nodeCenter(id: string) { const n = displayNodes.find((n: any) => n.id === id); return n ? { x: n.x + 64, y: n.y + 28 } : { x: 0, y: 0 }; }
 
   return (
     <div className="p-4 h-full flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">User Auth Module v2.4.1 — Sprint 14</p>
+        <p className="text-xs text-muted-foreground">{workflowName}</p>
         <div className="flex items-center gap-2">
           <StatusBadge status={runState === "running" ? "running" : "waiting"} />
           <button onClick={() => setRunState(s => s === "running" ? "paused" : "running")} className={`px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 transition-colors ${runState === "running" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-blue-500/10 text-blue-400 border border-blue-500/20"}`}>
             {runState === "running" ? <><Pause size={11} />Pause</> : <><Play size={11} />Resume</>}
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing || !activeRun?.githubRunId}
+            className="px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Syncing..." : "Sync GitHub"}
           </button>
           <button className="px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors"><RotateCcw size={11} />Retry</button>
           <button className="px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors"><Eye size={11} />Logs</button>
@@ -531,9 +580,9 @@ function SprintCanvas() {
         <div className="flex-1 bg-card border border-border rounded-lg overflow-auto relative">
           <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
           <svg width="1120" height="320" className="relative z-10">
-            {workflowEdges.map((e, i) => {
-              const from = nodeCenter(e.from); const to = nodeCenter(e.to);
-              const done = workflowNodes.find(n => n.id === e.from)?.status === "completed";
+            {displayEdges.map((e: any, i: number) => {
+              const from = nodeCenter(e.from || e.fromId); const to = nodeCenter(e.to || e.toId);
+              const done = displayNodes.find((n: any) => n.id === (e.from || e.fromId))?.status === "completed";
               return (
                 <g key={i}>
                   <path d={`M ${from.x} ${from.y} C ${(from.x+to.x)/2} ${from.y} ${(from.x+to.x)/2} ${to.y} ${to.x} ${to.y}`} fill="none" stroke={done ? "rgba(34,197,94,0.4)" : "rgba(148,163,184,0.15)"} strokeWidth={1.5} strokeDasharray={done ? "0" : "6 3"} />
@@ -541,14 +590,14 @@ function SprintCanvas() {
                 </g>
               );
             })}
-            {workflowNodes.map(node => {
+            {displayNodes.map((node: any) => {
               const isSelected = selected === node.id; const col = nodeColor[node.type]; const fill = statusFill[node.status];
               return (
                 <g key={node.id} onClick={() => setSelected(isSelected ? null : node.id)} className="cursor-pointer">
                   <rect x={node.x} y={node.y} width={128} height={56} rx={8} fill={isSelected ? `${col}22` : "#13151c"} stroke={isSelected ? col : "rgba(148,163,184,0.12)"} strokeWidth={isSelected ? 2 : 1} />
                   <circle cx={node.x+16} cy={node.y+16} r={5} fill={fill} opacity={0.8} />
                   <text x={node.x+28} y={node.y+21} fontSize={10} fontWeight={600} fill="#e8eaf0" fontFamily="Inter, sans-serif">{node.label.length > 14 ? node.label.substring(0,13)+"…" : node.label}</text>
-                  <text x={node.x+12} y={node.y+38} fontSize={9} fill="#6b7598" fontFamily="Inter, sans-serif">{node.status.charAt(0).toUpperCase()+node.status.slice(1)}{node.artifacts > 0 ? ` · ${node.artifacts} artifacts` : ""}</text>
+                  <text x={node.x+12} y={node.y+38} fontSize={9} fill="#6b7598" fontFamily="Inter, sans-serif">{node.status.charAt(0).toUpperCase()+node.status.slice(1)}{node.artifacts && node.artifacts > 0 ? ` · ${node.artifacts} artifacts` : ""}</text>
                   {node.status === "running" && <circle cx={node.x+116} cy={node.y+12} r={4} fill="#3b82f6" opacity={0.9}><animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.5s" repeatCount="indefinite" /></circle>}
                 </g>
               );
@@ -567,7 +616,7 @@ function SprintCanvas() {
           ) : (
             <>
               <div className="text-muted-foreground uppercase tracking-wider font-medium">Summary</div>
-              {(["completed","running","waiting","blocked"] as Status[]).map(s => { const c = workflowNodes.filter(n => n.status === s).length; return c > 0 ? <div key={s} className="flex justify-between items-center"><StatusBadge status={s} /><span className="font-semibold text-foreground">{c}</span></div> : null; })}
+              {(["completed","running","waiting","blocked"] as Status[]).map(s => { const c = displayNodes.filter((n: any) => n.status === s).length; return c > 0 ? <div key={s} className="flex justify-between items-center"><StatusBadge status={s} /><span className="font-semibold text-foreground">{c}</span></div> : null; })}
               <div className="border-t border-border pt-2 space-y-1.5 mt-1">
                 {[["Cost","$4.22"],["Elapsed","1h 12m"],["Artifacts","20"]].map(([l,v]) => <div key={l} className="flex justify-between"><span className="text-muted-foreground">{l}</span><span className="font-mono text-foreground">{v}</span></div>)}
               </div>
@@ -580,7 +629,7 @@ function SprintCanvas() {
 }
 
 // ── Workflow Designer ──
-function WorkflowDesigner() {
+function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasNodes, setCanvasNodes] = useState<DesignerNode[]>([]);
   const [edges, setEdges] = useState<DesignerEdge[]>([]);
@@ -600,6 +649,42 @@ function WorkflowDesigner() {
 
   const selectedNode = canvasNodes.find(n => n.id === selectedId);
   const selectedEdge = edges.find(e => e.id === selectedEdgeId);
+
+  // ── Load workflows from database on mount ──
+  useEffect(() => {
+    const loadWorkflowsFromDB = async () => {
+      try {
+        console.log('Loading workflows from database...');
+        const response = await workflowService.getAllWorkflows();
+
+        if (response.success && response.data) {
+          const dbWorkflows: SavedWorkflow[] = response.data.map((wf: any) => ({
+            id: wf.id,
+            name: wf.name,
+            nodes: [],  // Summary view doesn't include full nodes
+            edges: [],  // Summary view doesn't include full edges
+            nodeCount: parseInt(wf.node_count) || 0,  // Use count from database
+            edgeCount: parseInt(wf.edge_count) || 0,  // Use count from database
+            createdAt: new Date(wf.created_at).toLocaleDateString(),
+            status: wf.status as "draft" | "active" | "paused"
+          }));
+
+          // Merge with default workflows (keep defaults if DB is empty)
+          if (dbWorkflows.length > 0) {
+            setSavedWorkflows(dbWorkflows);
+            console.log(`Loaded ${dbWorkflows.length} workflows from database`);
+          } else {
+            console.log('No workflows in database, using defaults');
+          }
+        }
+      } catch (error) {
+        console.error('Error loading workflows:', error);
+        // Keep default workflows if DB load fails
+      }
+    };
+
+    loadWorkflowsFromDB();
+  }, []); // Run once on mount
 
   // ── Canvas rect helper ──
   const canvasRect = () => canvasRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
@@ -671,21 +756,314 @@ function WorkflowDesigner() {
   };
 
   // ── Save ──
-  const saveWorkflow = () => {
+  const saveWorkflow = async () => {
     if (!wfName.trim()) return;
-    const wf: SavedWorkflow = { id: `sw-${Date.now()}`, name: wfName, nodes: canvasNodes, edges, createdAt: "May 28, 2026", status: "draft" };
-    setSavedWorkflows(prev => [wf, ...prev]);
-    setSaveModal(false);
-    setWfName("");
+
+    try {
+      // Show loading state
+      console.log('Saving workflow to database...');
+
+      // Prepare workflow data for API
+      const workflowData: workflowService.Workflow = {
+        name: wfName,
+        description: `Workflow created on ${new Date().toLocaleDateString()}`,
+        status: 'draft',
+        nodes: canvasNodes.map(node => ({
+          id: node.id,
+          type: node.type,
+          label: node.label,
+          category: node.category,
+          color: node.color,
+          x: node.x,
+          y: node.y,
+          config: {}
+        })),
+        edges: edges.map(edge => ({
+          id: edge.id,
+          fromId: edge.fromId,
+          toId: edge.toId,
+          relationship: edge.relationship,
+          config: {}
+        })),
+        createdBy: 'current-user', // You can replace this with actual user
+        metadata: {
+          canvasVersion: '1.0',
+          savedAt: new Date().toISOString()
+        }
+      };
+
+      // Call API to save workflow
+      const response = await workflowService.createWorkflow(workflowData);
+
+      if (response.success && response.data) {
+        // Add to local state with database ID
+        const savedWf: SavedWorkflow = {
+          id: response.data.id || `sw-${Date.now()}`,
+          name: response.data.name,
+          nodes: canvasNodes,
+          edges,
+          createdAt: new Date(response.data.created_at || Date.now()).toLocaleDateString(),
+          status: response.data.status || 'draft'
+        };
+
+        setSavedWorkflows(prev => [savedWf, ...prev]);
+        setSaveModal(false);
+        setWfName("");
+
+        // Show success message
+        alert(`✅ Workflow "${response.data.name}" saved successfully to database!\nWorkflow ID: ${response.data.id}`);
+        console.log('Workflow saved:', response.data);
+      } else {
+        throw new Error(response.error || 'Failed to save workflow');
+      }
+    } catch (error: any) {
+      console.error('Error saving workflow:', error);
+      alert(`❌ Failed to save workflow: ${error.message}\n\nPlease check:\n- Backend server is running (http://localhost:3001)\n- Database connection is working`);
+    }
+  };
+
+  // ── Poll GitHub workflow status ──
+  const pollWorkflowStatus = async (workflowId: string, pollInterval: number = 10000) => {
+    try {
+      console.log('Starting to poll GitHub workflow status...');
+
+      // Get latest workflow runs
+      const runsResponse = await githubService.getWorkflowRuns('product-agent.yml', 5);
+
+      if (!runsResponse.success || !runsResponse.data || runsResponse.data.length === 0) {
+        console.log('No workflow runs found yet, will retry...');
+        return;
+      }
+
+      // Get the most recent run
+      const latestRun = runsResponse.data[0];
+      console.log('Latest GitHub workflow run:', latestRun);
+
+      // Get jobs for this run
+      const jobsResponse = await githubService.getWorkflowJobs(latestRun.id);
+
+      if (jobsResponse.success && jobsResponse.data) {
+        console.log('Workflow jobs:', jobsResponse.data);
+
+        // Update live run nodes based on job statuses
+        // This would require access to the live runs state from parent component
+        // For now, just log the status
+        jobsResponse.data.forEach((job: any) => {
+          console.log(`Job "${job.name}": ${job.status} (${job.conclusion || 'in progress'})`);
+        });
+      }
+
+      // Continue polling if workflow is still running
+      if (latestRun.status === 'in_progress' || latestRun.status === 'queued') {
+        setTimeout(() => pollWorkflowStatus(workflowId, pollInterval), pollInterval);
+      } else {
+        console.log(`Workflow completed with status: ${latestRun.status}, conclusion: ${latestRun.conclusion}`);
+      }
+    } catch (error) {
+      console.error('Error polling workflow status:', error);
+    }
+  };
+
+  // ── Launch workflow ──
+  const launchWorkflow = async (wf: SavedWorkflow) => {
+    try {
+      console.log('Launching workflow:', wf.name);
+
+      // Fetch complete workflow data
+      const response = await workflowService.getWorkflowById(wf.id);
+      if (!response.success || !response.data) {
+        throw new Error('Failed to load workflow details');
+      }
+
+      const fullWorkflow = response.data;
+
+      // Map nodes to live run format with status
+      const liveNodes = fullWorkflow.nodes.map((n: any, i: number) => ({
+        id: n.id,
+        label: n.label,
+        type: n.category?.toLowerCase() || "strategic",
+        status: i === 0 ? "running" : "waiting",  // First node starts running
+        x: parseFloat(n.x) || 0,
+        y: parseFloat(n.y) || 0,
+        artifacts: 0
+      }));
+
+      // Map edges to live run format
+      const liveEdges = fullWorkflow.edges.map((e: any) => ({
+        from: e.fromId,
+        to: e.toId,
+        fromId: e.fromId,
+        toId: e.toId
+      }));
+
+      // Create live run object
+      const liveRun = {
+        id: wf.id,
+        name: wf.name,
+        nodes: liveNodes,
+        edges: liveEdges,
+        status: "running",
+        startedAt: new Date().toISOString()
+      };
+
+      // Update saved workflows status
+      setSavedWorkflows(prev => prev.map(w =>
+        w.id === wf.id ? { ...w, status: "active" } : w
+      ));
+      setLaunchedId(wf.id);
+
+      // Trigger GitHub workflow if first node is "Product Vision"
+      const firstNode = fullWorkflow.nodes[0];
+      if (firstNode && (firstNode.type === "product-vision" || firstNode.label === "Product Vision")) {
+        console.log('Triggering GitHub workflow: product-agent');
+
+        // Trigger GitHub workflow
+        const githubResponse = await githubService.triggerWorkflow('product-agent.yml', 'main');
+
+        if (githubResponse.success) {
+          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Added to Live Runs\n⚙️ GitHub workflow "product-agent" triggered successfully`);
+
+          // Start polling for workflow status
+          pollWorkflowStatus(wf.id);
+        } else {
+          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Added to Live Runs\n⚠️ GitHub workflow trigger failed: ${githubResponse.error}\n\nWorkflow will run locally only.`);
+        }
+      } else {
+        alert(`🚀 Workflow "${wf.name}" launched and added to Live Runs!`);
+      }
+
+      // Add to live runs
+      onLaunch(liveRun);
+
+      console.log('Workflow launched:', liveRun);
+    } catch (error: any) {
+      console.error('Error launching workflow:', error);
+      alert(`❌ Failed to launch workflow: ${error.message}`);
+    }
+  };
+
+  // ── Delete saved workflow ──
+  const deleteWorkflow = async (wf: SavedWorkflow) => {
+    try {
+      // Confirm deletion
+      const confirmed = window.confirm(
+        `Are you sure you want to delete workflow "${wf.name}"?\n\nThis action cannot be undone.`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      console.log('Deleting workflow:', wf.id);
+      const response = await workflowService.deleteWorkflow(wf.id);
+
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to delete workflow');
+      }
+
+      // Remove from local state
+      setSavedWorkflows(prev => prev.filter(w => w.id !== wf.id));
+
+      // Clear launched state if this workflow was launched
+      if (launchedId === wf.id) {
+        setLaunchedId(null);
+      }
+
+      console.log('Workflow deleted successfully');
+      alert(`✅ Workflow "${wf.name}" deleted successfully!`);
+    } catch (error: any) {
+      console.error('Error deleting workflow:', error);
+      alert(`❌ Failed to delete workflow: ${error.message}`);
+    }
   };
 
   // ── Load saved workflow onto canvas ──
-  const loadWorkflow = (wf: SavedWorkflow) => {
-    setCanvasNodes(wf.nodes.map(n => ({ ...n, id: `loaded-${n.id}-${Date.now()}` })));
-    const idMap: Record<string, string> = {};
-    wf.nodes.forEach((n, i) => { idMap[n.id] = `loaded-${n.id}-${Date.now() + i}`; });
-    setEdges(wf.edges.map(e => ({ ...e, id: `le-${Date.now()}-${e.id}`, fromId: idMap[e.fromId] ?? e.fromId, toId: idMap[e.toId] ?? e.toId })));
-    setSelectedId(null); setSelectedEdgeId(null);
+  const loadWorkflow = async (wf: SavedWorkflow) => {
+    try {
+      // Fetch complete workflow data from database (including nodes and edges)
+      console.log('Loading workflow from database:', wf.id);
+      const response = await workflowService.getWorkflowById(wf.id);
+
+      if (!response.success || !response.data) {
+        throw new Error(response.error || 'Failed to load workflow');
+      }
+
+      const fullWorkflow = response.data;
+      console.log('Loaded workflow:', fullWorkflow);
+
+      // Check if we have nodes and edges
+      if (!fullWorkflow.nodes || fullWorkflow.nodes.length === 0) {
+        alert('⚠️ This workflow has no nodes to display.');
+        return;
+      }
+
+      // Convert positions to numbers and find bounding box
+      const nodesWithPositions = fullWorkflow.nodes.map((n: any) => ({
+        ...n,
+        x: parseFloat(n.x) || 0,
+        y: parseFloat(n.y) || 0
+      }));
+
+      // Calculate bounding box
+      const minX = Math.min(...nodesWithPositions.map((n: any) => n.x));
+      const maxX = Math.max(...nodesWithPositions.map((n: any) => n.x));
+      const minY = Math.min(...nodesWithPositions.map((n: any) => n.y));
+      const maxY = Math.max(...nodesWithPositions.map((n: any) => n.y));
+
+      // Calculate current center of the workflow
+      const workflowCenterX = (minX + maxX) / 2;
+      const workflowCenterY = (minY + maxY) / 2;
+
+      // Get canvas dimensions (or use defaults)
+      const canvasWidth = canvasRef.current?.clientWidth || 1000;
+      const canvasHeight = canvasRef.current?.clientHeight || 600;
+
+      // Calculate target center (middle of visible canvas)
+      const targetCenterX = canvasWidth / 2;
+      const targetCenterY = canvasHeight / 2;
+
+      // Calculate offset to center the workflow
+      const offsetX = targetCenterX - workflowCenterX;
+      const offsetY = targetCenterY - workflowCenterY;
+
+      console.log(`Centering workflow: offset (${offsetX.toFixed(0)}, ${offsetY.toFixed(0)})`);
+
+      // Map nodes with new IDs and centered positions
+      const timestamp = Date.now();
+      const idMap: Record<string, string> = {};
+
+      const loadedNodes = nodesWithPositions.map((n: any, i: number) => {
+        const newId = `loaded-${n.id}-${timestamp + i}`;
+        idMap[n.id] = newId;
+        return {
+          id: newId,
+          type: n.type,
+          label: n.label,
+          category: n.category,
+          color: n.color,
+          x: n.x + offsetX,
+          y: n.y + offsetY
+        };
+      });
+
+      // Map edges using the new node IDs
+      const loadedEdges = (fullWorkflow.edges || []).map((e: any, i: number) => ({
+        id: `le-${timestamp}-${i}`,
+        fromId: idMap[e.fromId] || e.fromId,
+        toId: idMap[e.toId] || e.toId,
+        relationship: e.relationship
+      }));
+
+      setCanvasNodes(loadedNodes);
+      setEdges(loadedEdges);
+      setSelectedId(null);
+      setSelectedEdgeId(null);
+
+      console.log(`Loaded ${loadedNodes.length} nodes and ${loadedEdges.length} edges`);
+    } catch (error: any) {
+      console.error('Error loading workflow:', error);
+      alert(`❌ Failed to load workflow: ${error.message}`);
+    }
   };
 
   // ── Edge path helpers ──
@@ -783,7 +1161,7 @@ function WorkflowDesigner() {
         <div
           ref={canvasRef}
           className={`flex-1 relative overflow-hidden ${connectingFrom ? "cursor-crosshair" : draggingId ? "cursor-grabbing" : "cursor-default"}`}
-          style={{ backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize: "24px 24px", backgroundColor: "#0b0c10" }}
+          style={{ backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.15) 1px, transparent 1px)", backgroundSize: "24px 24px", backgroundColor: "#ffffff" }}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onMouseMove={handleCanvasMouseMove}
@@ -795,12 +1173,12 @@ function WorkflowDesigner() {
         >
           {canvasEmpty && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none select-none">
-              <div className="w-12 h-12 rounded-xl border-2 border-dashed border-border flex items-center justify-center">
-                <Plus size={20} className="text-muted-foreground" />
+              <div className="w-12 h-12 rounded-xl border-2 border-dashed flex items-center justify-center" style={{ borderColor: "rgba(100,116,139,0.3)" }}>
+                <Plus size={20} style={{ color: "#64748b" }} />
               </div>
               <div className="text-center">
-                <div className="text-sm font-medium text-muted-foreground">Drag elements from the palette</div>
-                <div className="text-xs text-muted-foreground mt-0.5">Connect nodes by clicking the output port (▶) then a target node</div>
+                <div className="text-sm font-medium" style={{ color: "#475569" }}>Drag elements from the palette</div>
+                <div className="text-xs mt-0.5" style={{ color: "#64748b" }}>Connect nodes by clicking the output port (▶) then a target node</div>
               </div>
             </div>
           )}
@@ -836,7 +1214,7 @@ function WorkflowDesigner() {
                     markerEnd={`url(#arrow-${rel.type})`}
                   />
                   {/* Edge label */}
-                  <rect x={midX - 26} y={midY - 9} width={52} height={16} rx={4} fill="#13151c" stroke={rel.color} strokeWidth={0.5} opacity={0.9} />
+                  <rect x={midX - 26} y={midY - 9} width={52} height={16} rx={4} fill="#ffffff" stroke={rel.color} strokeWidth={1} opacity={1} />
                   <text x={midX} y={midY + 2} textAnchor="middle" fontSize={8} fill={rel.color} fontFamily="Inter, sans-serif" fontWeight={600}>{rel.label}</text>
                 </g>
               );
@@ -865,7 +1243,7 @@ function WorkflowDesigner() {
             return (
               <div
                 key={node.id}
-                style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, height: NODE_H, zIndex: draggingId === node.id ? 10 : 2, backgroundColor: isSelected ? `${node.color}18` : "#13151c", borderColor: isSelected ? node.color : "rgba(148,163,184,0.12)" }}
+                style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, height: NODE_H, zIndex: draggingId === node.id ? 10 : 2, backgroundColor: isSelected ? `${node.color}18` : "#ffffff", borderColor: isSelected ? node.color : "rgba(100,116,139,0.3)" }}
                 className={`rounded-lg border flex flex-col justify-center px-3 transition-shadow select-none
                   ${isSelected ? "shadow-lg" : ""}
                   ${isConnFrom ? "ring-2 ring-blue-400" : ""}
@@ -876,14 +1254,14 @@ function WorkflowDesigner() {
               >
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: node.color }} />
-                  <span className="text-xs font-semibold text-foreground truncate flex-1">{node.label}</span>
+                  <span className="text-xs font-semibold truncate flex-1" style={{ color: "#1e293b" }}>{node.label}</span>
                 </div>
                 <div className="text-[10px] mt-0.5 ml-4" style={{ color: node.color }}>{node.category}</div>
 
                 {/* Output port */}
                 <button
                   className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-4 h-4 rounded-full border-2 flex items-center justify-center hover:scale-125 transition-transform z-10"
-                  style={{ backgroundColor: isConnFrom ? node.color : "#13151c", borderColor: node.color }}
+                  style={{ backgroundColor: isConnFrom ? node.color : "#ffffff", borderColor: node.color }}
                   onMouseDown={e => e.stopPropagation()}
                   onClick={e => handleOutputPort(e, node.id)}
                   title="Drag to connect"
@@ -891,7 +1269,7 @@ function WorkflowDesigner() {
                   <span className="w-0 h-0" style={{ borderTop: "3px solid transparent", borderBottom: "3px solid transparent", borderLeft: `4px solid ${node.color}` }} />
                 </button>
                 {/* Input port */}
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full border-2" style={{ backgroundColor: "#13151c", borderColor: node.color, opacity: 0.6 }} />
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full border-2" style={{ backgroundColor: "#ffffff", borderColor: node.color, opacity: 0.8 }} />
               </div>
             );
           })}
@@ -1006,19 +1384,19 @@ function WorkflowDesigner() {
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-[10px] text-muted-foreground mb-2">
-                    <span>{wf.nodes.length} nodes</span>
-                    <span>{wf.edges.length} edges</span>
+                    <span>{wf.nodeCount ?? wf.nodes.length} nodes</span>
+                    <span>{wf.edgeCount ?? wf.edges.length} edges</span>
                     <span>{wf.createdAt}</span>
                   </div>
                   <div className="flex gap-1.5">
                     <button
-                      onClick={() => { setLaunchedId(wf.id); setSavedWorkflows(prev => prev.map(w => w.id === wf.id ? { ...w, status: "active" } : w)); }}
+                      onClick={async () => await launchWorkflow(wf)}
                       className="flex-1 py-1 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors flex items-center justify-center gap-1"
                     >
                       <Play size={9} /> Launch
                     </button>
                     <button
-                      onClick={() => { loadWorkflow(wf); setRightTab("properties"); }}
+                      onClick={async () => { await loadWorkflow(wf); setRightTab("properties"); }}
                       className="flex-1 py-1 rounded text-[10px] font-medium bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors"
                     >
                       Load
@@ -1026,8 +1404,16 @@ function WorkflowDesigner() {
                     <button
                       onClick={() => setPreviewWorkflow(wf)}
                       className="px-2 py-1 rounded text-[10px] font-medium bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors"
+                      title="Preview"
                     >
                       <Eye size={10} />
+                    </button>
+                    <button
+                      onClick={async (e) => { e.stopPropagation(); await deleteWorkflow(wf); }}
+                      className="px-2 py-1 rounded text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                      title="Delete workflow"
+                    >
+                      <Trash2 size={10} />
                     </button>
                   </div>
                   {launchedId === wf.id && (
@@ -1071,11 +1457,11 @@ function WorkflowDesigner() {
             <div className="flex items-center justify-between px-5 py-3 border-b border-border">
               <div>
                 <h3 className="text-sm font-semibold text-foreground">{previewWorkflow.name}</h3>
-                <p className="text-xs text-muted-foreground">{previewWorkflow.nodes.length} nodes · {previewWorkflow.edges.length} edges · {previewWorkflow.createdAt}</p>
+                <p className="text-xs text-muted-foreground">{previewWorkflow.nodeCount ?? previewWorkflow.nodes.length} nodes · {previewWorkflow.edgeCount ?? previewWorkflow.edges.length} edges · {previewWorkflow.createdAt}</p>
               </div>
               <button onClick={() => setPreviewWorkflow(null)} className="text-muted-foreground hover:text-foreground"><XCircle size={16} /></button>
             </div>
-            <div className="relative overflow-hidden" style={{ height: 260, backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize: "20px 20px", backgroundColor: "#0b0c10" }}>
+            <div className="relative overflow-hidden" style={{ height: 260, backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.15) 1px, transparent 1px)", backgroundSize: "20px 20px", backgroundColor: "#ffffff" }}>
               <svg className="absolute inset-0 w-full h-full pointer-events-none">
                 {previewWorkflow.edges.map(e => {
                   const fn = previewWorkflow.nodes.find(n => n.id === e.fromId);
@@ -1089,18 +1475,18 @@ function WorkflowDesigner() {
                 })}
               </svg>
               {previewWorkflow.nodes.map(node => (
-                <div key={node.id} style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, height: NODE_H, backgroundColor: "#13151c", borderColor: "rgba(148,163,184,0.12)" }} className="rounded-lg border flex flex-col justify-center px-3">
+                <div key={node.id} style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, height: NODE_H, backgroundColor: "#ffffff", borderColor: "rgba(100,116,139,0.3)" }} className="rounded-lg border flex flex-col justify-center px-3">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full" style={{ backgroundColor: node.color }} />
-                    <span className="text-xs font-semibold text-foreground truncate">{node.label}</span>
+                    <span className="text-xs font-semibold truncate" style={{ color: "#1e293b" }}>{node.label}</span>
                   </div>
                   <div className="text-[10px] ml-4" style={{ color: node.color }}>{node.category}</div>
                 </div>
               ))}
             </div>
             <div className="px-5 py-3 border-t border-border flex gap-2 justify-end">
-              <button onClick={() => { loadWorkflow(previewWorkflow); setPreviewWorkflow(null); setRightTab("properties"); }} className="px-3 py-1.5 rounded text-xs font-medium bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors">Load to Editor</button>
-              <button onClick={() => { setLaunchedId(previewWorkflow.id); setSavedWorkflows(prev => prev.map(w => w.id === previewWorkflow.id ? { ...w, status: "active" } : w)); setPreviewWorkflow(null); }} className="px-3 py-1.5 rounded text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1.5"><Play size={11} /> Launch</button>
+              <button onClick={async () => { await loadWorkflow(previewWorkflow); setPreviewWorkflow(null); setRightTab("properties"); }} className="px-3 py-1.5 rounded text-xs font-medium bg-muted text-muted-foreground border border-border hover:text-foreground transition-colors">Load to Editor</button>
+              <button onClick={async () => { await launchWorkflow(previewWorkflow); setPreviewWorkflow(null); }} className="px-3 py-1.5 rounded text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1.5"><Play size={11} /> Launch</button>
             </div>
           </div>
         </div>
@@ -1112,6 +1498,41 @@ function WorkflowDesigner() {
 // ── Tabbed WorkflowsView ──
 function WorkflowsView() {
   const [tab, setTab] = useState<"live" | "designer">("designer");
+  const [liveRuns, setLiveRuns] = useState<Array<{ id: string; name: string; nodes: any[]; edges: any[]; status: string; startedAt: string; githubRunId?: number }>>([]);
+
+  // Update live run node status
+  const updateLiveRunNode = useCallback((runId: string, nodeId: string, status: Status, artifacts?: number) => {
+    setLiveRuns(prev => prev.map(run => {
+      if (run.id === runId) {
+        return {
+          ...run,
+          nodes: run.nodes.map((n: any) =>
+            n.id === nodeId ? { ...n, status, artifacts: artifacts ?? n.artifacts } : n
+          )
+        };
+      }
+      return run;
+    }));
+  }, []);
+
+  // Sync GitHub workflow status
+  const syncGitHubStatus = useCallback(async (runId: string, githubRunId: number) => {
+    try {
+      const jobsResponse = await githubService.getWorkflowJobs(githubRunId);
+
+      if (jobsResponse.success && jobsResponse.data) {
+        jobsResponse.data.forEach((job: any) => {
+          const status = githubService.mapGitHubStatus(job.status, job.conclusion);
+          // Map job name to node - would need better mapping logic based on your workflow
+          const nodeIndex = jobsResponse.data.indexOf(job);
+          updateLiveRunNode(runId, `node-${nodeIndex}`, status);
+        });
+      }
+    } catch (error) {
+      console.error('Error syncing GitHub status:', error);
+    }
+  }, [updateLiveRunNode]);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between px-6 pt-5 pb-0 flex-shrink-0">
@@ -1122,13 +1543,17 @@ function WorkflowsView() {
         <div className="flex gap-1 border border-border rounded-lg p-0.5 bg-muted">
           {[{ id: "designer" as const, label: "Workflow Designer", icon: SlidersHorizontal }, { id: "live" as const, label: "Live Runs", icon: Activity }].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${tab === t.id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
-              <t.icon size={11} /> {t.label}
+              <t.icon size={11} /> {t.label} {t.id === "live" && liveRuns.length > 0 && <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/20 text-blue-400">{liveRuns.length}</span>}
             </button>
           ))}
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden mt-4 relative">
-        {tab === "live" ? <SprintCanvas /> : <WorkflowDesigner />}
+        {tab === "live" ? (
+          <SprintCanvas liveRuns={liveRuns} onRefreshStatus={syncGitHubStatus} />
+        ) : (
+          <WorkflowDesigner onLaunch={(run) => { setLiveRuns(prev => [run, ...prev]); setTab("live"); }} />
+        )}
       </div>
     </div>
   );
@@ -1949,13 +2374,13 @@ export default function App() {
       case "pipelines":
         return <GithubView initialTab={githubTabMap[view]} />;
       case "audit":       return <AuditView />;
-      case "discovery":   return <ComingSoon title="Product Discovery Workspace" icon={Lightbulb} />;
-      case "planning":    return <ComingSoon title="Planning & Requirements" icon={BookOpen} />;
-      case "architecture": return <ComingSoon title="Architecture Workspace" icon={Layers} />;
-      case "development": return <ComingSoon title="Development Workspace" icon={Code2} />;
-      case "qa":          return <ComingSoon title="QA & Validation Workspace" icon={FlaskConical} />;
-      case "deployment":  return <ComingSoon title="Deployment Center" icon={Rocket} />;
-      case "observability": return <ComingSoon title="Observability Workspace" icon={Activity} />;
+      case "discovery":   return <ProductDiscoveryView />;
+      case "planning":    return <PlanningView />;
+      case "architecture": return <ArchitectureView />;
+      case "development": return <DevelopmentView />;
+      case "qa":          return <QAView />;
+      case "deployment":  return <DeploymentView />;
+      case "observability": return <ObservabilityView />;
       case "policies":    return <ComingSoon title="Policy Management" icon={Shield} />;
       case "security":    return <ComingSoon title="Security Center" icon={Lock} />;
       case "settings":    return <ComingSoon title="Platform Settings" icon={Settings} />;
