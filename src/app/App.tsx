@@ -24,6 +24,7 @@ import {
 } from "recharts";
 import * as workflowService from "../services/workflow.service";
 import * as githubService from "../services/github.service";
+import * as repositoryService from "../services/repository.service";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -431,12 +432,20 @@ const paletteCategories = [
     ],
   },
   {
+    category: "Analysis", color: "#8b5cf6",
+    items: [
+      { type: "code-analysis", label: "Code Analysis", icon: Terminal },
+      { type: "design-analysis", label: "Design Analysis", icon: Layers },
+    ],
+  },
+  {
     category: "Architecture", color: "#f59e0b",
     items: [
       { type: "hld", label: "HLD", icon: Network },
       { type: "lld", label: "LLD", icon: Layers },
       { type: "adr", label: "ADR", icon: ScrollText },
       { type: "api-contract", label: "API Contract", icon: Braces },
+      { type: "ui-ux", label: "UI/UX", icon: Layers },
     ],
   },
   {
@@ -449,8 +458,18 @@ const paletteCategories = [
   {
     category: "QA", color: "#a855f7",
     items: [
+      { type: "test-strategy", label: "Test Strategy", icon: FileText },
+      { type: "test-cases", label: "Test Cases", icon: CheckSquare },
+      { type: "test-plan", label: "Test Plan", icon: BookOpen },
       { type: "test-suite", label: "Test Suite", icon: FlaskConical },
       { type: "test-report", label: "Test Report", icon: ListChecks },
+    ],
+  },
+  {
+    category: "Reviews", color: "#ec4899",
+    items: [
+      { type: "ai-agent-reviewer", label: "AI Agent Reviewer", icon: Bot, color: "#06b6d4" }, // Cyan for robotic look
+      { type: "human-in-loop", label: "Human-in-Loop", icon: Users },
     ],
   },
   {
@@ -531,12 +550,21 @@ function SprintCanvas({
   const [selected, setSelected] = useState<string | null>(null);
   const [runState, setRunState] = useState<"running" | "paused">("running");
   const [refreshing, setRefreshing] = useState(false);
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [tempNodePositions, setTempNodePositions] = useState<Record<string, { x: number; y: number }>>({});
+  const canvasRef = useRef<SVGSVGElement>(null);
 
   // Use live runs if available, otherwise show example
   const activeRun = liveRuns.length > 0 ? liveRuns[0] : null;
-  const displayNodes = activeRun ? activeRun.nodes : workflowNodes;
+  const baseNodes = activeRun ? activeRun.nodes : workflowNodes;
   const displayEdges = activeRun ? activeRun.edges : workflowEdges;
   const workflowName = activeRun ? activeRun.name : "User Auth Module v2.4.1 — Sprint 14";
+
+  // Apply temporary positions to nodes
+  const displayNodes = baseNodes.map((n: any) =>
+    tempNodePositions[n.id] ? { ...n, ...tempNodePositions[n.id] } : n
+  );
 
   // Debug logging
   if (activeRun) {
@@ -567,15 +595,74 @@ function SprintCanvas({
   };
 
   const selectedNode = displayNodes.find((n: any) => n.id === selected);
-  const nodeColor: Record<string, string> = { strategic: "#3b82f6", engineering: "#22c55e", governance: "#f59e0b", operational: "#a855f7" };
+  const nodeColor: Record<string, string> = {
+    strategic: "#3b82f6",
+    engineering: "#22c55e",
+    governance: "#f59e0b",
+    operational: "#a855f7",
+    Strategic: "#6366f1",
+    Analysis: "#8b5cf6",
+    Architecture: "#f59e0b",
+    Development: "#22c55e",
+    QA: "#a855f7",
+    Reviews: "#ec4899",
+    Operations: "#3b82f6",
+    Observability: "#ef4444"
+  };
   const statusFill: Record<Status, string> = { completed: "#22c55e", running: "#3b82f6", waiting: "#374151", failed: "#ef4444", blocked: "#f59e0b", retrying: "#a855f7", pending: "#6b7598" };
   function nodeCenter(id: string) {
     const n = displayNodes.find((n: any) => n.id === id);
     if (!n && activeRun) {
       console.warn('nodeCenter: Node not found for ID:', id);
     }
-    return n ? { x: n.x + 64, y: n.y + 28 } : { x: 0, y: 0 };
+    if (!n) return { x: 0, y: 0 };
+
+    // Check if node is circular (Human-in-Loop or AI Agent Reviewer)
+    // These nodes are 70px diameter circles (same as WorkflowDesigner)
+    const isCircular = n.type === "human-in-loop" || n.type === "ai-agent-reviewer";
+    if (isCircular) {
+      // For circular nodes: 70px diameter, center at radius (35px)
+      const circleSize = 70;
+      return { x: n.x + circleSize / 2, y: n.y + circleSize / 2 };
+    }
+
+    // For rectangular nodes: 128x56, center at half width/height
+    return { x: n.x + 128 / 2, y: n.y + 56 / 2 };
   }
+
+  // Drag handlers for nodes
+  const startNodeDrag = (e: React.MouseEvent, nodeId: string) => {
+    e.stopPropagation();
+    const node = displayNodes.find((n: any) => n.id === nodeId);
+    if (!node || !canvasRef.current) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const svgX = e.clientX - rect.left;
+    const svgY = e.clientY - rect.top;
+
+    setDraggingNodeId(nodeId);
+    setDragOffset({ x: svgX - node.x, y: svgY - node.y });
+  };
+
+  const handleNodeDrag = (e: React.MouseEvent) => {
+    if (!draggingNodeId || !canvasRef.current) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const svgX = e.clientX - rect.left;
+    const svgY = e.clientY - rect.top;
+
+    const newX = Math.max(0, svgX - dragOffset.x);
+    const newY = Math.max(0, svgY - dragOffset.y);
+
+    setTempNodePositions(prev => ({
+      ...prev,
+      [draggingNodeId]: { x: newX, y: newY }
+    }));
+  };
+
+  const stopNodeDrag = () => {
+    setDraggingNodeId(null);
+  };
 
   return (
     <div className="p-4 h-full flex flex-col gap-4">
@@ -606,8 +693,19 @@ function SprintCanvas({
         </div>
       </div>
       <div className="flex gap-4 flex-1 min-h-0">
-        <div className="flex-1 bg-card border border-border rounded-lg overflow-auto relative" style={{ backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize: "24px 24px" }}>
-          <svg width="1120" height="320" className="relative z-10" style={{ minWidth: "1120px", minHeight: "320px" }}>
+        <div className="flex-1 bg-card border border-border rounded-lg overflow-hidden relative" style={{ backgroundImage: "radial-gradient(circle, rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize: "24px 24px" }}>
+          <svg
+            ref={canvasRef}
+            width="100%"
+            height="100%"
+            className="relative z-10"
+            style={{ cursor: draggingNodeId ? "grabbing" : "default" }}
+            viewBox="0 0 1120 320"
+            preserveAspectRatio="xMidYMid meet"
+            onMouseMove={handleNodeDrag}
+            onMouseUp={stopNodeDrag}
+            onMouseLeave={stopNodeDrag}
+          >
             {/* SVG marker definitions for edge arrows */}
             <defs>
               {relationships.map(r => (
@@ -680,14 +778,160 @@ function SprintCanvas({
               );
             })}
             {displayNodes.map((node: any) => {
-              const isSelected = selected === node.id; const col = nodeColor[node.type]; const fill = statusFill[node.status];
+              const isSelected = selected === node.id;
+              // Get color from node.color (from palette) or fallback to category/type mapping
+              const col = node.color || nodeColor[node.category] || nodeColor[node.type] || "#3b82f6";
+              const isDragging = draggingNodeId === node.id;
+              const isHumanInLoop = node.type === "human-in-loop";
+              const isAIAgentReviewer = node.type === "ai-agent-reviewer";
+
+              // AI Agent Reviewer: Small circular node with AI/Bot icon
+              if (isAIAgentReviewer) {
+                const circleSize = 70;
+                const centerX = node.x + circleSize / 2;
+                const centerY = node.y + circleSize / 2;
+
+                return (
+                  <g
+                    key={node.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelected(isSelected ? null : node.id);
+                    }}
+                    onMouseDown={(e) => startNodeDrag(e, node.id)}
+                    className="cursor-grab active:cursor-grabbing"
+                    style={{ cursor: isDragging ? "grabbing" : "grab" }}
+                  >
+                    {/* Circular background */}
+                    <circle
+                      cx={centerX}
+                      cy={centerY}
+                      r={circleSize / 2}
+                      fill={isSelected ? `${col}30` : "#ffffff"}
+                      stroke={isSelected ? col : "rgba(100,116,139,0.3)"}
+                      strokeWidth={isSelected ? 2.5 : 2}
+                      opacity={isDragging ? 0.7 : 1}
+                    />
+
+                    {/* Modern AI Robot icon (positioned higher to make room for text) */}
+                    <g transform={`translate(${centerX - 10}, ${centerY - 14})`}>
+                      {/* Robot head with antenna */}
+                      <rect x="4" y="6" width="12" height="10" rx="2" fill={col} opacity="0.2" stroke={col} strokeWidth="1.5" />
+                      <circle cx="10" cy="4" r="1.5" fill={col} />
+                      <line x1="10" y1="4" x2="10" y2="6" stroke={col} strokeWidth="1.5" />
+                      {/* Eyes with glow effect */}
+                      <circle cx="7.5" cy="10" r="1.2" fill={col} />
+                      <circle cx="12.5" cy="10" r="1.2" fill={col} />
+                      {/* Circuit pattern mouth */}
+                      <path d="M6 13 L8 13 L8 14 L10 14 L10 13 L12 13 L12 14 L14 14" stroke={col} strokeWidth="1.2" fill="none" strokeLinecap="round" />
+                      {/* Side connections */}
+                      <line x1="4" y1="9" x2="2" y2="9" stroke={col} strokeWidth="1.5" />
+                      <line x1="16" y1="9" x2="18" y2="9" stroke={col} strokeWidth="1.5" />
+                    </g>
+
+                    {/* "AI Review" text inside circle, below icon */}
+                    <text
+                      x={centerX}
+                      y={centerY + 16}
+                      textAnchor="middle"
+                      fontSize={8}
+                      fontWeight={500}
+                      fill={col}
+                      fontFamily="Inter, sans-serif"
+                    >
+                      AI Review
+                    </text>
+
+                    {/* Status indicator on top-right */}
+                    {node.status === "running" && (
+                      <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#f97316" opacity={0.9}>
+                        <animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.5s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                    {node.status === "completed" && <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#22c55e" opacity={0.9} />}
+                    {node.status === "failed" && <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#ef4444" opacity={0.9} />}
+                  </g>
+                );
+              }
+
+              // Human-in-Loop: Small circular node with "Review" text inside
+              if (isHumanInLoop) {
+                const circleSize = 70;
+                const centerX = node.x + circleSize / 2;
+                const centerY = node.y + circleSize / 2;
+
+                return (
+                  <g
+                    key={node.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelected(isSelected ? null : node.id);
+                    }}
+                    onMouseDown={(e) => startNodeDrag(e, node.id)}
+                    className="cursor-grab active:cursor-grabbing"
+                    style={{ cursor: isDragging ? "grabbing" : "grab" }}
+                  >
+                    {/* Circular background */}
+                    <circle
+                      cx={centerX}
+                      cy={centerY}
+                      r={circleSize / 2}
+                      fill={isSelected ? `${col}30` : "#ffffff"}
+                      stroke={isSelected ? col : "rgba(100,116,139,0.3)"}
+                      strokeWidth={isSelected ? 2.5 : 2}
+                      opacity={isDragging ? 0.7 : 1}
+                    />
+
+                    {/* Human icon (positioned higher to make room for text) */}
+                    <g transform={`translate(${centerX - 10}, ${centerY - 14})`}>
+                      <circle cx="10" cy="6" r="3.5" fill={col} />
+                      <path d="M10 11 C7.5 11 6 12.5 6 14.5 L6 17 L14 17 L14 14.5 C14 12.5 12.5 11 10 11 Z" fill={col} />
+                    </g>
+
+                    {/* "Review" text inside circle, below icon */}
+                    <text
+                      x={centerX}
+                      y={centerY + 16}
+                      textAnchor="middle"
+                      fontSize={8}
+                      fontWeight={500}
+                      fill={col}
+                      fontFamily="Inter, sans-serif"
+                    >
+                      Review
+                    </text>
+
+                    {/* Status indicator on top-right */}
+                    {node.status === "running" && (
+                      <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#f97316" opacity={0.9}>
+                        <animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.5s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                    {node.status === "completed" && <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#22c55e" opacity={0.9} />}
+                    {node.status === "failed" && <circle cx={centerX + 24} cy={centerY - 24} r={4} fill="#ef4444" opacity={0.9} />}
+                  </g>
+                );
+              }
+
+              // Regular rectangular shape for other nodes
               return (
-                <g key={node.id} onClick={() => setSelected(isSelected ? null : node.id)} className="cursor-pointer">
-                  <rect x={node.x} y={node.y} width={128} height={56} rx={8} fill={isSelected ? `${col}22` : "#13151c"} stroke={isSelected ? col : "rgba(148,163,184,0.12)"} strokeWidth={isSelected ? 2 : 1} />
-                  <circle cx={node.x+16} cy={node.y+16} r={5} fill={fill} opacity={0.8} />
-                  <text x={node.x+28} y={node.y+21} fontSize={10} fontWeight={600} fill="#e8eaf0" fontFamily="Inter, sans-serif">{node.label.length > 14 ? node.label.substring(0,13)+"…" : node.label}</text>
-                  <text x={node.x+12} y={node.y+38} fontSize={9} fill="#6b7598" fontFamily="Inter, sans-serif">{node.status.charAt(0).toUpperCase()+node.status.slice(1)}{node.artifacts && node.artifacts > 0 ? ` · ${node.artifacts} artifacts` : ""}</text>
-                  {node.status === "running" && <circle cx={node.x+116} cy={node.y+12} r={4} fill="#3b82f6" opacity={0.9}><animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.5s" repeatCount="indefinite" /></circle>}
+                <g
+                  key={node.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelected(isSelected ? null : node.id);
+                  }}
+                  onMouseDown={(e) => startNodeDrag(e, node.id)}
+                  className="cursor-grab active:cursor-grabbing"
+                  style={{ cursor: isDragging ? "grabbing" : "grab" }}
+                >
+                  <rect x={node.x} y={node.y} width={128} height={56} rx={8} fill={isSelected ? `${col}18` : "#ffffff"} stroke={isSelected ? col : "rgba(100,116,139,0.3)"} strokeWidth={isSelected ? 2 : 1} opacity={isDragging ? 0.7 : 1} />
+                  <circle cx={node.x+12} cy={node.y+20} r={4} fill={col} opacity={0.8} />
+                  <text x={node.x+22} y={node.y+24} fontSize={11} fontWeight={600} fill="#1e293b" fontFamily="Inter, sans-serif">{node.label.length > 14 ? node.label.substring(0,13)+"…" : node.label}</text>
+                  <text x={node.x+22} y={node.y+38} fontSize={9} fill={col} fontFamily="Inter, sans-serif">{node.category || (node.type.charAt(0).toUpperCase()+node.type.slice(1))}</text>
+                  {node.status === "running" && <circle cx={node.x+116} cy={node.y+12} r={4} fill="#f97316" opacity={0.9}><animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.5s" repeatCount="indefinite" /></circle>}
+                  {node.status === "completed" && <circle cx={node.x+116} cy={node.y+12} r={4} fill="#22c55e" opacity={0.9} />}
+                  {node.status === "failed" && <circle cx={node.x+116} cy={node.y+12} r={4} fill="#ef4444" opacity={0.9} />}
                 </g>
               );
             })}
@@ -966,6 +1210,23 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
 
       const fullWorkflow = response.data;
 
+      // Update workflow status to "active" in database
+      console.log('Updating workflow status to "active" in database...');
+      const updateResponse = await workflowService.updateWorkflow(wf.id, {
+        status: 'active',
+        metadata: {
+          ...fullWorkflow.metadata,
+          launchedAt: new Date().toISOString()
+        }
+      });
+
+      if (!updateResponse.success) {
+        console.warn('Failed to update workflow status in database:', updateResponse.error);
+        // Continue anyway - local state will still update
+      } else {
+        console.log('✅ Workflow status updated to "active" in database');
+      }
+
       // Convert positions to numbers
       const nodesWithPositions = fullWorkflow.nodes.map((n: any) => ({
         ...n,
@@ -1019,7 +1280,8 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
         from: e.fromId,
         to: e.toId,
         fromId: e.fromId,
-        toId: e.toId
+        toId: e.toId,
+        relationship: e.relationship || "successor"
       }));
 
       // Create live run object
@@ -1032,11 +1294,14 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
         startedAt: new Date().toISOString()
       };
 
-      // Update saved workflows status
+      // Update saved workflows status in local state
       setSavedWorkflows(prev => prev.map(w =>
         w.id === wf.id ? { ...w, status: "active" } : w
       ));
       setLaunchedId(wf.id);
+
+      // Add to live runs FIRST, then switch to Live Runs tab
+      onLaunch(liveRun);
 
       // Trigger GitHub workflow if first node is "Product Vision"
       const firstNode = fullWorkflow.nodes[0];
@@ -1044,22 +1309,19 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
         console.log('Triggering GitHub workflow: product-agent');
 
         // Trigger GitHub workflow
-        const githubResponse = await githubService.triggerWorkflow('product-agent1.yml', 'main');
+        const githubResponse = await githubService.triggerWorkflow('product-agent.yml', 'main');
 
         if (githubResponse.success) {
-          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Added to Live Runs\n⚙️ GitHub workflow "product-agent" triggered successfully`);
+          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Status: Running\n✅ Added to Live Runs\n⚙️ GitHub workflow "product-agent" triggered successfully`);
 
           // Start polling for workflow status
           pollWorkflowStatus(wf.id);
         } else {
-          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Added to Live Runs\n⚠️ GitHub workflow trigger failed: ${githubResponse.error}\n\nWorkflow will run locally only.`);
+          alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Status: Running\n✅ Added to Live Runs\n⚠️ GitHub workflow trigger failed: ${githubResponse.error}\n\nWorkflow will run locally only.`);
         }
       } else {
-        alert(`🚀 Workflow "${wf.name}" launched and added to Live Runs!`);
+        alert(`🚀 Workflow "${wf.name}" launched!\n\n✅ Status: Running\n✅ Added to Live Runs`);
       }
-
-      // Add to live runs
-      onLaunch(liveRun);
 
       console.log('Workflow launched:', liveRun);
       console.log(`Live run created with ${liveNodes.length} nodes and ${liveEdges.length} edges`);
@@ -1197,8 +1459,22 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
   };
 
   // ── Edge path helpers ──
-  const portOut = (n: DesignerNode) => ({ x: n.x + NODE_W, y: n.y + NODE_H / 2 });
-  const portIn  = (n: DesignerNode) => ({ x: n.x,          y: n.y + NODE_H / 2 });
+  const portOut = (n: DesignerNode) => {
+    const isCircular = n.type === "human-in-loop" || n.type === "ai-agent-reviewer";
+    if (isCircular) {
+      const circleSize = 70;
+      return { x: n.x + circleSize, y: n.y + circleSize / 2 };
+    }
+    return { x: n.x + NODE_W, y: n.y + NODE_H / 2 };
+  };
+  const portIn = (n: DesignerNode) => {
+    const isCircular = n.type === "human-in-loop" || n.type === "ai-agent-reviewer";
+    if (isCircular) {
+      const circleSize = 70;
+      return { x: n.x, y: n.y + circleSize / 2 };
+    }
+    return { x: n.x, y: n.y + NODE_H / 2 };
+  };
   const bezier  = (x1: number, y1: number, x2: number, y2: number) => {
     const cx = (x1 + x2) / 2;
     return `M ${x1} ${y1} C ${cx} ${y1} ${cx} ${y2} ${x2} ${y2}`;
@@ -1225,11 +1501,11 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
                     <div
                       key={item.type}
                       draggable
-                      onDragStart={e => e.dataTransfer.setData("palette-item", JSON.stringify({ type: item.type, label: item.label, category: cat.category, color: cat.color }))}
+                      onDragStart={e => e.dataTransfer.setData("palette-item", JSON.stringify({ type: item.type, label: item.label, category: cat.category, color: item.color || cat.color }))}
                       className="flex items-center gap-2 px-2.5 py-2 rounded cursor-grab active:cursor-grabbing border border-transparent hover:border-border hover:bg-muted/60 transition-colors select-none group"
                     >
-                      <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${cat.color}18` }}>
-                        <Icon size={11} style={{ color: cat.color }} />
+                      <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${item.color || cat.color}18` }}>
+                        <Icon size={11} style={{ color: item.color || cat.color }} />
                       </div>
                       <span className="text-xs text-foreground truncate">{item.label}</span>
                     </div>
@@ -1370,10 +1646,189 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
             const isSelected = selectedId === node.id;
             const isConnFrom = connectingFrom === node.id;
             const isConnTarget = !!connectingFrom && connectingFrom !== node.id;
+            const isHumanInLoop = node.type === "human-in-loop";
+            const isAIAgentReviewer = node.type === "ai-agent-reviewer";
+
+            // AI Agent Reviewer: Small circular node with AI icon
+            if (isAIAgentReviewer) {
+              const circleSize = 70;
+              const centerY = circleSize / 2;
+              return (
+                <div
+                  key={node.id}
+                  style={{
+                    position: "absolute",
+                    left: node.x,
+                    top: node.y,
+                    width: circleSize,
+                    height: circleSize,
+                    zIndex: draggingId === node.id ? 10 : 2,
+                  }}
+                  onMouseDown={e => startNodeDrag(e, node.id)}
+                  onClick={e => handleNodeClick(e, node.id)}
+                  title={node.label} // Show label on hover
+                >
+                  {/* Circular background with icon and text inside */}
+                  <div
+                    className={`rounded-full border-2 flex flex-col items-center justify-center gap-1 transition-all select-none cursor-grab active:cursor-grabbing
+                      ${isSelected ? "shadow-lg scale-110" : ""}
+                      ${isConnFrom ? "ring-2 ring-blue-400" : ""}
+                      ${isConnTarget ? "hover:ring-2 hover:ring-green-400 cursor-pointer" : ""}
+                    `}
+                    style={{
+                      width: circleSize,
+                      height: circleSize,
+                      backgroundColor: isSelected ? `${node.color}30` : "#ffffff",
+                      borderColor: isSelected ? node.color : "rgba(100,116,139,0.3)",
+                      padding: "4px"
+                    }}
+                  >
+                    {/* Modern AI Robot icon */}
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ marginTop: "-4px" }}>
+                      {/* Robot head with antenna */}
+                      <rect x="6" y="8" width="12" height="10" rx="2" fill={node.color} opacity="0.2" stroke={node.color} strokeWidth="1.5" />
+                      <circle cx="12" cy="6" r="1.5" fill={node.color} />
+                      <line x1="12" y1="6" x2="12" y2="8" stroke={node.color} strokeWidth="1.5" />
+                      {/* Eyes with glow effect */}
+                      <circle cx="9.5" cy="12" r="1.2" fill={node.color} />
+                      <circle cx="14.5" cy="12" r="1.2" fill={node.color} />
+                      {/* Circuit pattern mouth */}
+                      <path d="M8 15 L10 15 L10 16 L12 16 L12 15 L14 15 L14 16 L16 16" stroke={node.color} strokeWidth="1.2" fill="none" strokeLinecap="round" />
+                      {/* Side connections */}
+                      <line x1="6" y1="11" x2="4" y2="11" stroke={node.color} strokeWidth="1.5" />
+                      <line x1="18" y1="11" x2="20" y2="11" stroke={node.color} strokeWidth="1.5" />
+                    </svg>
+
+                    {/* AI Review text inside circle */}
+                    <div className="text-[9px] font-medium" style={{ color: node.color, marginTop: "-2px" }}>
+                      AI Review
+                    </div>
+                  </div>
+
+                  {/* Output port - positioned on right edge of circle at center */}
+                  <button
+                    className="absolute w-4 h-4 rounded-full border-2 flex items-center justify-center hover:scale-125 transition-transform z-10"
+                    style={{
+                      left: `${circleSize}px`,
+                      top: `${centerY}px`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: isConnFrom ? node.color : "#ffffff",
+                      borderColor: node.color
+                    }}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => handleOutputPort(e, node.id)}
+                    title="Connect from here"
+                  >
+                    <span className="w-0 h-0" style={{ borderTop: "3px solid transparent", borderBottom: "3px solid transparent", borderLeft: `4px solid ${node.color}` }} />
+                  </button>
+                  {/* Input port - positioned on left edge of circle at center */}
+                  <div
+                    className="absolute w-3 h-3 rounded-full border-2"
+                    style={{
+                      left: '0px',
+                      top: `${centerY}px`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: "#ffffff",
+                      borderColor: node.color,
+                      opacity: 0.8
+                    }}
+                  />
+                </div>
+              );
+            }
+
+            // Human-in-Loop: Small circular node
+            if (isHumanInLoop) {
+              const circleSize = 70;
+              const centerY = circleSize / 2;
+              return (
+                <div
+                  key={node.id}
+                  style={{
+                    position: "absolute",
+                    left: node.x,
+                    top: node.y,
+                    width: circleSize,
+                    height: circleSize,
+                    zIndex: draggingId === node.id ? 10 : 2,
+                  }}
+                  onMouseDown={e => startNodeDrag(e, node.id)}
+                  onClick={e => handleNodeClick(e, node.id)}
+                  title={node.label} // Show label on hover
+                >
+                  {/* Circular background with icon and text inside */}
+                  <div
+                    className={`rounded-full border-2 flex flex-col items-center justify-center gap-1 transition-all select-none cursor-grab active:cursor-grabbing
+                      ${isSelected ? "shadow-lg scale-110" : ""}
+                      ${isConnFrom ? "ring-2 ring-blue-400" : ""}
+                      ${isConnTarget ? "hover:ring-2 hover:ring-green-400 cursor-pointer" : ""}
+                    `}
+                    style={{
+                      width: circleSize,
+                      height: circleSize,
+                      backgroundColor: isSelected ? `${node.color}30` : "#ffffff",
+                      borderColor: isSelected ? node.color : "rgba(100,116,139,0.3)",
+                      padding: "4px"
+                    }}
+                  >
+                    {/* Human icon */}
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ marginTop: "-4px" }}>
+                      <circle cx="12" cy="7" r="3.5" fill={node.color} />
+                      <path d="M12 12 C8.5 12 6 14 6 17 L6 20 L18 20 L18 17 C18 14 15.5 12 12 12 Z" fill={node.color} />
+                    </svg>
+
+                    {/* Review text inside circle */}
+                    <div className="text-[9px] font-medium" style={{ color: node.color, marginTop: "-2px" }}>
+                      Review
+                    </div>
+                  </div>
+
+                  {/* Output port - positioned on right edge of circle at center */}
+                  <button
+                    className="absolute w-4 h-4 rounded-full border-2 flex items-center justify-center hover:scale-125 transition-transform z-10"
+                    style={{
+                      left: `${circleSize}px`,
+                      top: `${centerY}px`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: isConnFrom ? node.color : "#ffffff",
+                      borderColor: node.color
+                    }}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => handleOutputPort(e, node.id)}
+                    title="Connect from here"
+                  >
+                    <span className="w-0 h-0" style={{ borderTop: "3px solid transparent", borderBottom: "3px solid transparent", borderLeft: `4px solid ${node.color}` }} />
+                  </button>
+                  {/* Input port - positioned on left edge of circle at center */}
+                  <div
+                    className="absolute w-3 h-3 rounded-full border-2"
+                    style={{
+                      left: '0px',
+                      top: `${centerY}px`,
+                      transform: 'translate(-50%, -50%)',
+                      backgroundColor: "#ffffff",
+                      borderColor: node.color,
+                      opacity: 0.8
+                    }}
+                  />
+                </div>
+              );
+            }
+
+            // Regular rectangular node for all other types
             return (
               <div
                 key={node.id}
-                style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, height: NODE_H, zIndex: draggingId === node.id ? 10 : 2, backgroundColor: isSelected ? `${node.color}18` : "#ffffff", borderColor: isSelected ? node.color : "rgba(100,116,139,0.3)" }}
+                style={{
+                  position: "absolute",
+                  left: node.x,
+                  top: node.y,
+                  width: NODE_W,
+                  height: NODE_H,
+                  zIndex: draggingId === node.id ? 10 : 2,
+                  backgroundColor: isSelected ? `${node.color}18` : "#ffffff",
+                  borderColor: isSelected ? node.color : "rgba(100,116,139,0.3)",
+                }}
                 className={`rounded-lg border flex flex-col justify-center px-3 transition-shadow select-none
                   ${isSelected ? "shadow-lg" : ""}
                   ${isConnFrom ? "ring-2 ring-blue-400" : ""}
@@ -1510,7 +1965,7 @@ function WorkflowDesigner({ onLaunch }: { onLaunch: (run: any) => void }) {
                   <div className="flex items-start justify-between gap-1 mb-1.5">
                     <span className="text-xs font-semibold text-foreground leading-tight">{wf.name}</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 ${wf.status === "active" ? "bg-green-400/10 text-green-400 border-green-400/20" : wf.status === "paused" ? "bg-amber-400/10 text-amber-400 border-amber-400/20" : "bg-muted text-muted-foreground border-border"}`}>
-                      {wf.status}
+                      {wf.status === "active" ? "running" : wf.status}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-[10px] text-muted-foreground mb-2">
@@ -1965,6 +2420,46 @@ function ApprovalsView() {
 
 function GithubView({ initialTab }: { initialTab?: "repos" | "prs" | "issues" | "pipelines" }) {
   const [tab, setTab] = useState<"repos" | "prs" | "issues" | "pipelines">(initialTab ?? "repos");
+  const [connectedRepos, setConnectedRepos] = useState<any[]>([]);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [repoOwner, setRepoOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Load connected repositories from database on mount
+  useEffect(() => {
+    const loadRepositories = async () => {
+      try {
+        console.log('Loading connected repositories from database...');
+        const response = await repositoryService.getAllRepositories();
+
+        if (response.success && response.data) {
+          setConnectedRepos(response.data);
+          console.log(`Loaded ${response.data.length} repositories from database`);
+        } else {
+          console.warn('Failed to load repositories:', response.error);
+        }
+      } catch (error) {
+        console.error('Error loading repositories:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadRepositories();
+  }, []);
+
+  // Close modal on ESC key
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showConnectModal) {
+        setShowConnectModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [showConnectModal]);
 
   const tabs = [
     { id: "repos" as const, label: "Repositories", icon: FolderGit2 },
@@ -1989,6 +2484,98 @@ function GithubView({ initialTab }: { initialTab?: "repos" | "prs" | "issues" | 
     { name: "security-scan", repo: "agenticsdlc-core", trigger: "schedule", status: "passing" as const, duration: "8m 30s", time: "4h ago" },
   ];
 
+  // Handle connecting to a GitHub repository
+  const handleConnectRepo = async () => {
+    if (!repoOwner.trim() || !repoName.trim()) {
+      alert('⚠️ Please enter both owner and repository name');
+      return;
+    }
+
+    setConnecting(true);
+    try {
+      console.log(`Connecting to GitHub repository: ${repoOwner}/${repoName}`);
+
+      // Call GitHub API to get repository info
+      const repoResponse = await githubService.getRepository(repoOwner, repoName);
+
+      if (!repoResponse.success || !repoResponse.data) {
+        throw new Error(repoResponse.error || 'Failed to fetch repository');
+      }
+
+      const repo = repoResponse.data;
+
+      // Prepare repository data for database
+      const newRepoData = {
+        name: repo.name,
+        owner: repoOwner,
+        fullName: repo.full_name,
+        language: repo.language || 'Unknown',
+        stars: repo.stargazers_count || 0,
+        branches: 1, // Default, would need additional API call to get exact count
+        description: repo.description || '',
+        url: repo.html_url,
+        lastCommit: 'just now',
+        status: 'active' as const,
+        connectedAt: new Date().toISOString()
+      };
+
+      // Save to database
+      console.log('Saving repository to database...');
+      const saveResponse = await repositoryService.connectRepository(newRepoData);
+
+      if (!saveResponse.success || !saveResponse.data) {
+        throw new Error(saveResponse.error || 'Failed to save repository to database');
+      }
+
+      // Add to local state with database ID
+      setConnectedRepos(prev => [saveResponse.data!, ...prev]);
+
+      // Reset form and close modal
+      setRepoOwner("");
+      setRepoName("");
+      setShowConnectModal(false);
+
+      alert(`✅ Successfully connected to repository "${repo.full_name}"!\n\n💾 Repository saved to database`);
+      console.log('Repository connected and saved:', saveResponse.data);
+    } catch (error: any) {
+      console.error('Error connecting repository:', error);
+      alert(`❌ Failed to connect repository: ${error.message}\n\nPlease check:\n- Repository owner and name are correct\n- Repository exists and is accessible\n- Backend server is running (http://localhost:3001)\n- Database connection is working`);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  // Handle disconnecting a repository
+  const handleDisconnectRepo = async (repoId: string, repoName: string) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to disconnect repository "${repoName}"?\n\nThis action cannot be undone.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      console.log('Disconnecting repository:', repoId);
+
+      // Delete from database
+      const response = await repositoryService.disconnectRepository(repoId);
+
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to disconnect repository');
+      }
+
+      // Remove from local state
+      setConnectedRepos(prev => prev.filter(r => r.id !== repoId));
+
+      console.log('Repository disconnected successfully');
+      alert(`✅ Repository "${repoName}" disconnected successfully!`);
+    } catch (error: any) {
+      console.error('Error disconnecting repository:', error);
+      alert(`❌ Failed to disconnect repository: ${error.message}`);
+    }
+  };
+
   return (
     <div className="p-6 flex flex-col gap-5">
       <div className="flex items-center justify-between">
@@ -1996,8 +2583,11 @@ function GithubView({ initialTab }: { initialTab?: "repos" | "prs" | "issues" | 
           <h2 className="text-base font-semibold text-foreground">GitHub Operations</h2>
           <p className="text-xs text-muted-foreground mt-0.5">Orchestration visibility over GitHub workflows</p>
         </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 bg-muted text-muted-foreground border border-border rounded text-xs font-medium hover:text-foreground transition-colors">
-          <Github size={12} /> Connect Repository
+        <button
+          onClick={() => setShowConnectModal(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground border border-primary rounded text-xs font-medium hover:bg-primary/90 transition-colors"
+        >
+          <Plus size={12} /> Connect Repository
         </button>
       </div>
 
@@ -2014,24 +2604,88 @@ function GithubView({ initialTab }: { initialTab?: "repos" | "prs" | "issues" | 
       </div>
 
       {tab === "repos" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {repositories.map(r => (
-            <div key={r.name} className="bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors cursor-pointer">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <FolderGit2 size={14} className="text-primary" />
-                  <span className="font-medium text-foreground text-sm">{r.name}</span>
-                </div>
-                <ExternalLink size={12} className="text-muted-foreground" />
-              </div>
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400" />{r.language}</span>
-                <span className="flex items-center gap-1"><GitBranch size={10} />{r.branches} branches</span>
-                <span className="flex items-center gap-1"><GitCommit size={10} />{r.lastCommit}</span>
+        <>
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <RefreshCw size={16} className="animate-spin" />
+                <span className="text-sm">Loading repositories...</span>
               </div>
             </div>
-          ))}
-        </div>
+          ) : connectedRepos.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center mb-3">
+                <FolderGit2 size={20} className="text-muted-foreground" />
+              </div>
+              <h3 className="text-sm font-medium text-foreground mb-1">No repositories connected</h3>
+              <p className="text-xs text-muted-foreground mb-4">Connect your first GitHub repository to get started</p>
+              <button
+                onClick={() => setShowConnectModal(true)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded text-xs font-medium hover:bg-primary/90 transition-colors"
+              >
+                <Plus size={12} /> Connect Repository
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {connectedRepos.map(r => (
+                <div key={r.id || r.name} className="bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors group">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <FolderGit2 size={14} className="text-primary flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-foreground text-sm truncate">{r.name}</span>
+                          <a
+                            href={r.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <ExternalLink size={11} />
+                          </a>
+                        </div>
+                        {r.fullName && (
+                          <p className="text-[10px] text-muted-foreground font-mono">{r.fullName}</p>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDisconnectRepo(r.id, r.fullName || r.name);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2 p-1.5 rounded text-red-400 hover:bg-red-400/10 border border-transparent hover:border-red-400/20"
+                      title="Disconnect repository"
+                    >
+                      <XCircle size={14} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                      {r.language}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <GitBranch size={10} />
+                      {r.branches} branches
+                    </span>
+                    {r.lastCommit && (
+                      <span className="flex items-center gap-1">
+                        <GitCommit size={10} />
+                        {r.lastCommit}
+                      </span>
+                    )}
+                  </div>
+                  {r.description && (
+                    <p className="mt-2 text-xs text-muted-foreground line-clamp-2">{r.description}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {tab === "prs" && (
@@ -2119,6 +2773,91 @@ function GithubView({ initialTab }: { initialTab?: "repos" | "prs" | "issues" | 
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Connect Repository Modal */}
+      {showConnectModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowConnectModal(false)}>
+          <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-foreground">Connect GitHub Repository</h3>
+              <button
+                onClick={() => setShowConnectModal(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <XCircle size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  Repository Owner / Organization
+                </label>
+                <input
+                  type="text"
+                  value={repoOwner}
+                  onChange={(e) => setRepoOwner(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnectRepo()}
+                  placeholder="e.g., anthropics"
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  Repository Name
+                </label>
+                <input
+                  type="text"
+                  value={repoName}
+                  onChange={(e) => setRepoName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnectRepo()}
+                  placeholder="e.g., claude-code"
+                  className="w-full px-3 py-2 bg-background border border-border rounded text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              <div className="bg-muted/50 border border-border rounded p-3 text-xs text-muted-foreground">
+                <div className="flex items-start gap-2">
+                  <Info size={14} className="flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium text-foreground mb-1">Example:</p>
+                    <p>For repository <span className="font-mono text-foreground">https://github.com/anthropics/claude-code</span></p>
+                    <p className="mt-1">Owner: <span className="font-mono text-foreground">anthropics</span></p>
+                    <p>Name: <span className="font-mono text-foreground">claude-code</span></p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => setShowConnectModal(false)}
+                className="flex-1 px-4 py-2 bg-muted text-muted-foreground border border-border rounded text-sm font-medium hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConnectRepo}
+                disabled={connecting || !repoOwner.trim() || !repoName.trim()}
+                className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {connecting ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  <>
+                    <Github size={14} />
+                    Connect
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

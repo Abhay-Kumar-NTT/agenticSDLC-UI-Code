@@ -315,6 +315,51 @@ export async function getWorkflowLogs(runId: number): Promise<ApiResponse<string
 }
 
 /**
+ * Get repository information
+ * @param owner - Repository owner (username or organization)
+ * @param repo - Repository name
+ */
+export async function getRepository(
+  owner: string,
+  repo: string
+): Promise<ApiResponse<any>> {
+  try {
+    console.log(`Fetching repository: ${owner}/${repo}`);
+
+    // Use public API endpoint that doesn't require authentication
+    const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        // Only add auth if token is available
+        ...(GITHUB_TOKEN ? { 'Authorization': `Bearer ${GITHUB_TOKEN}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ message: response.statusText }));
+      throw new Error(error.message || `GitHub API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    console.log('✅ Repository fetched successfully:', data.full_name);
+    return {
+      success: true,
+      data,
+    };
+  } catch (error: any) {
+    console.error('❌ Get repository error:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to fetch repository',
+    };
+  }
+}
+
+/**
  * Map GitHub status to our application status
  */
 export function mapGitHubStatus(
@@ -339,5 +384,6 @@ export default {
   cancelWorkflowRun,
   rerunWorkflow,
   getWorkflowLogs,
+  getRepository,
   mapGitHubStatus,
 };
